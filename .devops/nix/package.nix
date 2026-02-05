@@ -16,7 +16,7 @@
   rocmPackages,
   vulkan-headers,
   vulkan-loader,
-  curl,
+  openssl,
   shaderc,
   useBlas ?
     builtins.all (x: !x) [
@@ -35,17 +35,18 @@
   useVulkan ? false,
   useRpc ? false,
   llamaVersion ? "0.0.0", # Arbitrary version, substituted by the flake
-
   # It's necessary to consistently use backendStdenv when building with CUDA support,
   # otherwise we get libstdc++ errors downstream.
-  effectiveStdenv ? if useCuda then cudaPackages.backendStdenv else stdenv,
+  effectiveStdenv ?
+    if useCuda
+    then cudaPackages.backendStdenv
+    else stdenv,
   enableStatic ? effectiveStdenv.hostPlatform.isStatic,
   precompileMetalShaders ? false,
   useWebUi ? true,
-}:
-
-let
-  inherit (lib)
+}: let
+  inherit
+    (lib)
     cmakeBool
     cmakeFeature
     optionalAttrs
@@ -56,35 +57,34 @@ let
   stdenv = throw "Use effectiveStdenv instead";
 
   suffices =
-    lib.optionals useBlas [ "BLAS" ]
-    ++ lib.optionals useCuda [ "CUDA" ]
-    ++ lib.optionals useMetalKit [ "MetalKit" ]
-    ++ lib.optionals useMpi [ "MPI" ]
-    ++ lib.optionals useRocm [ "ROCm" ]
-    ++ lib.optionals useVulkan [ "Vulkan" ];
+    lib.optionals useBlas ["BLAS"]
+    ++ lib.optionals useCuda ["CUDA"]
+    ++ lib.optionals useMetalKit ["MetalKit"]
+    ++ lib.optionals useMpi ["MPI"]
+    ++ lib.optionals useRocm ["ROCm"]
+    ++ lib.optionals useVulkan ["Vulkan"];
 
   pnameSuffix =
-    strings.optionalString (suffices != [ ])
-      "-${strings.concatMapStringsSep "-" strings.toLower suffices}";
+    strings.optionalString (suffices != [])
+    "-${strings.concatMapStringsSep "-" strings.toLower suffices}";
   descriptionSuffix = strings.optionalString (
-    suffices != [ ]
+    suffices != []
   ) ", accelerated with ${strings.concatStringsSep ", " suffices}";
 
-  xcrunHost = runCommand "xcrunHost" { } ''
+  xcrunHost = runCommand "xcrunHost" {} ''
     mkdir -p $out/bin
     ln -s /usr/bin/xcrun $out/bin
   '';
 
   # apple_sdk is supposed to choose sane defaults, no need to handle isAarch64
   # separately
-  darwinBuildInputs =
-    with darwin.apple_sdk.frameworks;
+  darwinBuildInputs = with darwin.apple_sdk.frameworks;
     [
       Accelerate
       CoreVideo
       CoreGraphics
     ]
-    ++ optionals useMetalKit [ MetalKit ];
+    ++ optionals useMetalKit [MetalKit];
 
   cudaBuildInputs = with cudaPackages; [
     cuda_cudart
@@ -104,142 +104,141 @@ let
     shaderc
   ];
 in
+  effectiveStdenv.mkDerivation (finalAttrs: {
+    pname = "llama-cpp${pnameSuffix}";
+    version = llamaVersion;
 
-effectiveStdenv.mkDerivation (finalAttrs: {
-  pname = "llama-cpp${pnameSuffix}";
-  version = llamaVersion;
-
-  # Note: none of the files discarded here are visible in the sandbox or
-  # affect the output hash. This also means they can be modified without
-  # triggering a rebuild.
-  src = lib.cleanSourceWith {
-    filter =
-      name: type:
-      let
+    # Note: none of the files discarded here are visible in the sandbox or
+    # affect the output hash. This also means they can be modified without
+    # triggering a rebuild.
+    src = lib.cleanSourceWith {
+      filter = name: type: let
         noneOf = builtins.all (x: !x);
         baseName = baseNameOf name;
       in
-      noneOf [
-        (lib.hasSuffix ".nix" name) # Ignore *.nix files when computing outPaths
-        (lib.hasSuffix ".md" name) # Ignore *.md changes whe computing outPaths
-        (lib.hasPrefix "." baseName) # Skip hidden files and directories
-        (baseName == "flake.lock")
-      ];
-    src = lib.cleanSource ../../.;
-  };
+        noneOf [
+          (lib.hasSuffix ".nix" name) # Ignore *.nix files when computing outPaths
+          (lib.hasSuffix ".md" name) # Ignore *.md changes whe computing outPaths
+          (lib.hasPrefix "." baseName) # Skip hidden files and directories
+          (baseName == "flake.lock")
+        ];
+      src = lib.cleanSource ../../.;
+    };
 
-  postPatch = ''
-  '';
+    postPatch = ''
+    '';
 
-  # With PR#6015 https://github.com/ggml-org/llama.cpp/pull/6015,
-  # `default.metallib` may be compiled with Metal compiler from XCode
-  # and we need to escape sandbox on MacOS to access Metal compiler.
-  # `xcrun` is used find the path of the Metal compiler, which is varible
-  # and not on $PATH
-  # see https://github.com/ggml-org/llama.cpp/pull/6118 for discussion
-  __noChroot = effectiveStdenv.isDarwin && useMetalKit && precompileMetalShaders;
+    # With PR#6015 https://github.com/ggml-org/llama.cpp/pull/6015,
+    # `default.metallib` may be compiled with Metal compiler from XCode
+    # and we need to escape sandbox on MacOS to access Metal compiler.
+    # `xcrun` is used find the path of the Metal compiler, which is varible
+    # and not on $PATH
+    # see https://github.com/ggml-org/llama.cpp/pull/6118 for discussion
+    __noChroot = effectiveStdenv.isDarwin && useMetalKit && precompileMetalShaders;
 
-  nativeBuildInputs =
-    [
-      cmake
-      ninja
-      pkg-config
-      git
-    ]
-    ++ optionals useCuda [
-      cudaPackages.cuda_nvcc
+    nativeBuildInputs =
+      [
+        cmake
+        ninja
+        pkg-config
+        git
+      ]
+      ++ optionals useCuda [
+        cudaPackages.cuda_nvcc
 
-      autoAddDriverRunpath
-    ]
-    ++ optionals (effectiveStdenv.hostPlatform.isGnu && enableStatic) [ glibc.static ]
-    ++ optionals (effectiveStdenv.isDarwin && useMetalKit && precompileMetalShaders) [ xcrunHost ];
+        autoAddDriverRunpath
+      ]
+      ++ optionals (effectiveStdenv.hostPlatform.isGnu && enableStatic) [glibc.static]
+      ++ optionals (effectiveStdenv.isDarwin && useMetalKit && precompileMetalShaders) [xcrunHost];
 
-  buildInputs =
-    optionals effectiveStdenv.isDarwin darwinBuildInputs
-    ++ optionals useCuda cudaBuildInputs
-    ++ optionals useMpi [ mpi ]
-    ++ optionals useRocm rocmBuildInputs
-    ++ optionals useBlas [ blas ]
-    ++ optionals useVulkan vulkanBuildInputs;
+    buildInputs =
+      optionals effectiveStdenv.isDarwin darwinBuildInputs
+      ++ optionals useCuda cudaBuildInputs
+      ++ optionals useMpi [mpi]
+      ++ optionals useRocm rocmBuildInputs
+      ++ optionals useBlas [blas]
+      ++ optionals useVulkan vulkanBuildInputs
+      ++ [openssl];
 
-  cmakeFlags =
-    [
-      (cmakeBool "LLAMA_BUILD_SERVER" true)
-      (cmakeBool "LLAMA_BUILD_WEBUI" useWebUi)
-      (cmakeBool "BUILD_SHARED_LIBS" (!enableStatic))
-      (cmakeBool "CMAKE_SKIP_BUILD_RPATH" true)
-      (cmakeBool "GGML_NATIVE" false)
-      (cmakeBool "GGML_BLAS" useBlas)
-      (cmakeBool "GGML_CUDA" useCuda)
-      (cmakeBool "GGML_HIP" useRocm)
-      (cmakeBool "GGML_METAL" useMetalKit)
-      (cmakeBool "GGML_VULKAN" useVulkan)
-      (cmakeBool "GGML_STATIC" enableStatic)
-      (cmakeBool "GGML_RPC" useRpc)
-    ]
-    ++ optionals useCuda [
-      (
-        with cudaPackages.flags;
-        cmakeFeature "CMAKE_CUDA_ARCHITECTURES" (
-          builtins.concatStringsSep ";" (map dropDot cudaCapabilities)
+    cmakeFlags =
+      [
+        (cmakeBool "LLAMA_BUILD_SERVER" true)
+        (cmakeBool "LLAMA_BUILD_WEBUI" useWebUi)
+        (cmakeBool "LLAMA_OPENSSL" true)
+        (cmakeBool "BUILD_SHARED_LIBS" (!enableStatic))
+        (cmakeBool "CMAKE_SKIP_BUILD_RPATH" true)
+        (cmakeBool "GGML_NATIVE" false)
+        (cmakeBool "GGML_BLAS" useBlas)
+        (cmakeBool "GGML_CUDA" useCuda)
+        (cmakeBool "GGML_HIP" useRocm)
+        (cmakeBool "GGML_METAL" useMetalKit)
+        (cmakeBool "GGML_VULKAN" useVulkan)
+        (cmakeBool "GGML_STATIC" enableStatic)
+        (cmakeBool "GGML_RPC" useRpc)
+      ]
+      ++ optionals useCuda [
+        (
+          with cudaPackages.flags;
+            cmakeFeature "CMAKE_CUDA_ARCHITECTURES" (
+              builtins.concatStringsSep ";" (map dropDot cudaCapabilities)
+            )
         )
-      )
-    ]
-    ++ optionals useRocm [
-      (cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.llvm.clang}/bin/clang")
-      (cmakeFeature "CMAKE_HIP_ARCHITECTURES" rocmGpuTargets)
-    ]
-    ++ optionals useMetalKit [
-      (lib.cmakeFeature "CMAKE_C_FLAGS" "-D__ARM_FEATURE_DOTPROD=1")
-      (cmakeBool "GGML_METAL_EMBED_LIBRARY" (!precompileMetalShaders))
-    ];
+      ]
+      ++ optionals useRocm [
+        (cmakeFeature "CMAKE_HIP_COMPILER" "${rocmPackages.llvm.clang}/bin/clang")
+        (cmakeFeature "CMAKE_HIP_ARCHITECTURES" rocmGpuTargets)
+      ]
+      ++ optionals useMetalKit [
+        (lib.cmakeFeature "CMAKE_C_FLAGS" "-D__ARM_FEATURE_DOTPROD=1")
+        (cmakeBool "GGML_METAL_EMBED_LIBRARY" (!precompileMetalShaders))
+      ];
 
-  # Environment variables needed for ROCm
-  env = optionalAttrs useRocm {
-    ROCM_PATH = "${rocmPackages.clr}";
-    HIP_DEVICE_LIB_PATH = "${rocmPackages.rocm-device-libs}/amdgcn/bitcode";
-  };
+    # Environment variables needed for ROCm
+    env = optionalAttrs useRocm {
+      ROCM_PATH = "${rocmPackages.clr}";
+      HIP_DEVICE_LIB_PATH = "${rocmPackages.rocm-device-libs}/amdgcn/bitcode";
+    };
 
-  # TODO(SomeoneSerge): It's better to add proper install targets at the CMake level,
-  # if they haven't been added yet.
-  postInstall = ''
-    mkdir -p $out/include
-    cp $src/include/llama.h $out/include/
-  '';
+    # TODO(SomeoneSerge): It's better to add proper install targets at the CMake level,
+    # if they haven't been added yet.
+    postInstall = ''
+      mkdir -p $out/include
+      cp $src/include/llama.h $out/include/
+    '';
 
-  meta = {
-    # Configurations we don't want even the CI to evaluate. Results in the
-    # "unsupported platform" messages. This is mostly a no-op, because
-    # cudaPackages would've refused to evaluate anyway.
-    badPlatforms = optionals useCuda lib.platforms.darwin;
+    meta = {
+      # Configurations we don't want even the CI to evaluate. Results in the
+      # "unsupported platform" messages. This is mostly a no-op, because
+      # cudaPackages would've refused to evaluate anyway.
+      badPlatforms = optionals useCuda lib.platforms.darwin;
 
-    # Configurations that are known to result in build failures. Can be
-    # overridden by importing Nixpkgs with `allowBroken = true`.
-    broken = (useMetalKit && !effectiveStdenv.isDarwin);
+      # Configurations that are known to result in build failures. Can be
+      # overridden by importing Nixpkgs with `allowBroken = true`.
+      broken = useMetalKit && !effectiveStdenv.isDarwin;
 
-    description = "Inference of LLaMA model in pure C/C++${descriptionSuffix}";
-    homepage = "https://github.com/ggml-org/llama.cpp/";
-    license = lib.licenses.mit;
+      description = "Inference of LLaMA model in pure C/C++${descriptionSuffix}";
+      homepage = "https://github.com/ggml-org/llama.cpp/";
+      license = lib.licenses.mit;
 
-    # Accommodates `nix run` and `lib.getExe`
-    mainProgram = "llama-cli";
+      # Accommodates `nix run` and `lib.getExe`
+      mainProgram = "llama-cli";
 
-    # These people might respond, on the best effort basis, if you ping them
-    # in case of Nix-specific regressions or for reviewing Nix-specific PRs.
-    # Consider adding yourself to this list if you want to ensure this flake
-    # stays maintained and you're willing to invest your time. Do not add
-    # other people without their consent. Consider removing people after
-    # they've been unreachable for long periods of time.
+      # These people might respond, on the best effort basis, if you ping them
+      # in case of Nix-specific regressions or for reviewing Nix-specific PRs.
+      # Consider adding yourself to this list if you want to ensure this flake
+      # stays maintained and you're willing to invest your time. Do not add
+      # other people without their consent. Consider removing people after
+      # they've been unreachable for long periods of time.
 
-    # Note that lib.maintainers is defined in Nixpkgs, but you may just add
-    # an attrset following the same format as in
-    # https://github.com/NixOS/nixpkgs/blob/f36a80e54da29775c78d7eff0e628c2b4e34d1d7/maintainers/maintainer-list.nix
-    maintainers = with lib.maintainers; [
-      philiptaron
-      SomeoneSerge
-    ];
+      # Note that lib.maintainers is defined in Nixpkgs, but you may just add
+      # an attrset following the same format as in
+      # https://github.com/NixOS/nixpkgs/blob/f36a80e54da29775c78d7eff0e628c2b4e34d1d7/maintainers/maintainer-list.nix
+      maintainers = with lib.maintainers; [
+        philiptaron
+        SomeoneSerge
+      ];
 
-    # Extend `badPlatforms` instead
-    platforms = lib.platforms.all;
-  };
-})
+      # Extend `badPlatforms` instead
+      platforms = lib.platforms.all;
+    };
+  })
